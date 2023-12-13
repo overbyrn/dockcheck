@@ -23,6 +23,7 @@ Help() {
   echo "-h     Print this Help."
   echo "-a|y   Automatic updates, without interaction."
   echo "-n     No updates, only checking availability."
+  echo "-c <c> Docker Context."
   echo "-e     Exclude containers, separated by comma."
   echo "-p     Auto-Prune dangling images after update."
   echo "-r     Allow updating images for docker run, wont update the container"
@@ -30,10 +31,11 @@ Help() {
 }
 
 Stopped=""
-while getopts "aynprhse:" options; do
+while getopts "aync:prhse:" options; do
   case "${options}" in
     a|y) UpdYes="yes" ;;
     n) UpdYes="no" ;;
+	c) Context=${OPTARG^^} ;;
     r) DrUp="yes" ;;
     p) PruneQ="yes" ;;
     e) Exclude=${OPTARG} ;;
@@ -163,13 +165,28 @@ if [[ -n ${Excludes[*]} ]] ; then
   printf "\n"
 fi
 
+### Get list of available docker contexts
+if [[ ! -z "$Context" ]]; then
+  echo "Looking for context [$Context]"
+  readarray -t contexts < <(docker context ls | awk '!/^(default)/ {if(NR>1) print toupper($1)}') 
+  echo "Available contexts: ${contexts[@]}"
+  if [[ ! "${contexts[*]}" =~ "${Context}" ]]; then
+    echo "Context not found"
+  else
+    echo "Found context [$Context]"
+  fi
+else
+  echo "Using local context [default]"
+  Context=default
+fi
+
 ### Check the image-hash of every running container VS the registry
-for i in $(docker ps $Stopped --filter "name=$SearchName" --format '{{.Names}}') ; do
+for i in $(docker --context $Context ps $Stopped --filter "name=$SearchName" --format '{{.Names}}') ; do
   ### Looping every item over the list of excluded names and skipping:
   for e in "${Excludes[@]}" ; do [[ "$i" == "$e" ]] && continue 2 ; done 
   printf ". "
-  RepoUrl=$(docker inspect "$i" --format='{{.Config.Image}}')
-  LocalHash=$(docker image inspect "$RepoUrl" --format '{{.RepoDigests}}')
+  RepoUrl=$(docker --context $Context inspect "$i" --format='{{.Config.Image}}')
+  LocalHash=$(docker --context $Context image inspect "$RepoUrl" --format '{{.RepoDigests}}')
   ### Checking for errors while setting the variable:
   if RegHash=$($regbin image digest --list "$RepoUrl" 2>/dev/null) ; then
     if [[ "$LocalHash" = *"$RegHash"* ]] ; then NoUpdates+=("$i"); else GotUpdates+=("$i"); fi
@@ -216,11 +233,11 @@ if [ -n "$GotUpdates" ] ; then
     do
       ((CurrentQue+=1))
       unset CompleteConfs
-      ContPath=$(docker inspect "$i" --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}')
-      ContConfigFile=$(docker inspect "$i" --format '{{ index .Config.Labels "com.docker.compose.project.config_files" }}')
-      ContName=$(docker inspect "$i" --format '{{ index .Config.Labels "com.docker.compose.service" }}')
-      ContEnv=$(docker inspect "$i" --format '{{index .Config.Labels "com.docker.compose.project.environment_file" }}')
-      ContImage=$(docker inspect "$i" --format='{{.Config.Image}}')
+      ContPath=$(docker --context $Context inspect "$i" --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}')
+      ContConfigFile=$(docker --context $Context inspect "$i" --format '{{ index .Config.Labels "com.docker.compose.project.config_files" }}')
+      ContName=$(docker --context $Context inspect "$i" --format '{{ index .Config.Labels "com.docker.compose.service" }}')
+      ContEnv=$(docker --context $Context inspect "$i" --format '{{index .Config.Labels "com.docker.compose.project.environment_file" }}')
+      ContImage=$(docker --context $Context inspect "$i" --format='{{.Config.Image}}')
       ### Checking if compose-values are empty - hence started with docker run:
       if [ -z "$ContPath" ] ; then 
         if [ "$DrUp" == "yes" ] ; then
@@ -254,7 +271,7 @@ if [ -n "$GotUpdates" ] ; then
     done
     printf "\033[0;32mAll done!\033[0m\n"
     [[ -z "$PruneQ" ]] && read -r -p "Would you like to prune dangling images? y/[n]: " PruneQ
-    [[ "$PruneQ" =~ [yY] ]] && docker image prune -f 
+    [[ "$PruneQ" =~ [yY] ]] && docker --context $Context image prune -f 
   else
     printf "\nNo updates installed, exiting.\n"
   fi
